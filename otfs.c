@@ -193,7 +193,7 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 		/* TODO: Implement xattrs for regular files and symlinks */
 	}
 	
-	return 0;
+	return -ENODATA;
 }
 
 static const struct xattr_handler otfs_xattr_handler = {
