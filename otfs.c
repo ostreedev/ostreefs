@@ -169,73 +169,6 @@ static int otfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	return 0;
 }
 
-static int otfs_setxattr(const struct xattr_handler *handler,
-			struct user_namespace *mnt_userns,
-			struct dentry *unused, struct inode *inode,
-			const char *name, const void *value, size_t size,
-			int flags)
-{
-	return -EROFS;
-}
-
-static int otfs_getxattr(const struct xattr_handler *handler,
-			struct dentry *unused2, struct inode *inode,
-			const char *name, void *value, size_t size)
-{
-	struct otfs_inode *oti = OTFS_I(inode);
-	size_t name_len = strlen(name);
-	size_t i;
-
-	printk(KERN_ERR "getxattr %s\n", name);
-	
-	if (S_ISDIR(inode->i_mode)) {
-		OtArrayofXattrRef xattrs;
-		size_t n_xattrs = 0;
-
-		if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
-			n_xattrs = ot_arrayof_xattr_get_length(xattrs);
-
-		for (i = 0; i < n_xattrs; i++) {
-			OtXattrRef xattr;
-			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
-				size_t this_name_len, this_value_len;
-				const u8 *this_name, *this_value;
-
-				this_name = ot_xattr_get_name (xattr, &this_name_len);
-				if (name_len != this_name_len ||
-				    memcmp(this_name, name, name_len) != 0)
-					continue;
-
-				printk(KERN_ERR "match xattr %*s: %*s\n", (int)this_name_len, this_name, (int)this_value_len, this_value);
-				
-				this_value = ot_xattr_get_value (xattr, &this_value_len);
-				if (size == 0)
-					return this_value_len;
-				if (size  < this_value_len + 1)
-					return -E2BIG;
-				memcpy(value, this_value, this_value_len);
-				printk(KERN_ERR "xattr return len %d\n", (int)this_value_len);
-				return this_value_len;
-			}
-		}
-	} else {
-		/* TODO: Implement xattrs for regular files and symlinks */
-	}
-	
-	return -ENODATA;
-}
-
-static const struct xattr_handler otfs_xattr_handler = {
-	.prefix = "", /* catch all */
-	.get = otfs_getxattr,
-	.set = otfs_setxattr,
-};
-
-static const struct xattr_handler *otfs_xattr_handlers[] = {
-	&otfs_xattr_handler,
-	NULL,
-};
-
 static struct file *otfs_open_object (struct file *object_dir, const char *object_id, const char *type, int flags)
 {
 	char relpath[OSTREE_SHA256_STRING_LEN + 12]; /* Fits slash and longest extenssion (.dirtree) */
@@ -531,6 +464,73 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 
 	return ERR_PTR(ret);
 }
+
+static int otfs_setxattr(const struct xattr_handler *handler,
+			struct user_namespace *mnt_userns,
+			struct dentry *unused, struct inode *inode,
+			const char *name, const void *value, size_t size,
+			int flags)
+{
+	return -EROFS;
+}
+
+static int otfs_getxattr(const struct xattr_handler *handler,
+			struct dentry *unused2, struct inode *inode,
+			const char *name, void *value, size_t size)
+{
+	struct otfs_inode *oti = OTFS_I(inode);
+	struct otfs_info *fsi = inode->i_sb->s_fs_info;
+	size_t name_len = strlen(name);
+	size_t i;
+
+	if (S_ISDIR(inode->i_mode)) {
+		OtArrayofXattrRef xattrs;
+		size_t n_xattrs = 0;
+
+		if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
+			n_xattrs = ot_arrayof_xattr_get_length(xattrs);
+
+		for (i = 0; i < n_xattrs; i++) {
+			OtXattrRef xattr;
+			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
+				size_t this_name_len, this_value_len;
+				const u8 *this_name, *this_value;
+
+				this_name = ot_xattr_get_name (xattr, &this_name_len);
+				if (name_len != this_name_len ||
+				    memcmp(this_name, name, name_len) != 0)
+					continue;
+
+				this_value = ot_xattr_get_value (xattr, &this_value_len);
+				if (size == 0)
+					return this_value_len;
+				if (size  < this_value_len + 1)
+					return -E2BIG;
+				memcpy(value, this_value, this_value_len);
+				return this_value_len;
+			}
+		}
+	} else {
+		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_RDONLY);
+		if (IS_ERR(f))
+			return PTR_ERR(f);
+
+		return vfs_getxattr(&init_user_ns, f->f_path.dentry, name, value, size);
+	}
+
+	return -ENODATA;
+}
+
+static const struct xattr_handler otfs_xattr_handler = {
+	.prefix = "", /* catch all */
+	.get = otfs_getxattr,
+	.set = otfs_setxattr,
+};
+
+static const struct xattr_handler *otfs_xattr_handlers[] = {
+	&otfs_xattr_handler,
+	NULL,
+};
 
 static int otfs_rmdir(struct inode *ino, struct dentry *dir)
 {
