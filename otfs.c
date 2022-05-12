@@ -8,6 +8,7 @@
  * This file is released under the GPL.
  */
 
+#include <linux/statfs.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/highmem.h>
@@ -77,6 +78,20 @@ static int otfs_show_options(struct seq_file *m, struct dentry *root)
 	return 0;
 }
 
+static int otfs_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+	struct otfs_info *fsi = dentry->d_sb->s_fs_info;
+	int err;
+
+	err = vfs_statfs(&(fsi->object_dir->f_path), buf);
+	if (!err) {
+		buf->f_namelen = NAME_MAX;
+		buf->f_type = OTFS_MAGIC;
+	}
+
+	return err;
+}
+
 static void otfs_free_inode(struct inode *inode)
 {
 	struct otfs_inode_info *ino_info;
@@ -94,7 +109,7 @@ static void otfs_free_inode(struct inode *inode)
 }
 
 static const struct super_operations otfs_ops = {
-	.statfs = simple_statfs,
+	.statfs = otfs_statfs,
 	.drop_inode = generic_delete_inode,
 	.show_options = otfs_show_options,
 	.free_inode = otfs_free_inode,
