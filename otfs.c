@@ -480,6 +480,7 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 	struct otfs_info *fsi = inode->i_sb->s_fs_info;
 	size_t name_len = strlen(name);
 	size_t i;
+	int res;
 
 	if (S_ISDIR(inode->i_mode)) {
 		OtArrayofXattrRef xattrs;
@@ -513,7 +514,9 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 		if (IS_ERR(f))
 			return PTR_ERR(f);
 
-		return vfs_getxattr(&init_user_ns, f->f_path.dentry, name, value, size);
+		res = vfs_getxattr(&init_user_ns, f->f_path.dentry, name, value, size);
+		fput(f);
+		return res;
 	}
 
 	return -ENODATA;
