@@ -9,27 +9,17 @@
  * This file is released under the GPL.
  */
 
-#include <linux/statfs.h>
-#include <linux/fs.h>
-#include <linux/pagemap.h>
-#include <linux/highmem.h>
-#include <linux/time.h>
-#include <linux/init.h>
-#include <linux/string.h>
-#include <linux/backing-dev.h>
-#include <linux/sched.h>
-#include <linux/parser.h>
-#include <linux/xattr.h>
-#include <linux/magic.h>
-#include <linux/slab.h>
-#include <linux/uaccess.h>
-#include <linux/fs_context.h>
-#include <linux/fs_parser.h>
-#include <linux/namei.h>
-#include <linux/mount.h>
 #include <asm/unaligned.h>
-#include <linux/kernel_read_file.h>
 #include <crypto/sha2.h>
+#include <linux/backing-dev.h>
+#include <linux/fs.h>
+#include <linux/fs_parser.h>
+#include <linux/init.h>
+#include <linux/kernel_read_file.h>
+#include <linux/pagemap.h>
+#include <linux/statfs.h>
+#include <linux/string.h>
+#include <linux/xattr.h>
 
 #include "ostree.h"
 
