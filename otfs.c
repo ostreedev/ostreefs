@@ -102,6 +102,7 @@ static struct inode *otfs_alloc_inode(struct super_block *sb)
 	if (!oti)
 		return NULL;
 
+        oti->vfs_inode.i_link = NULL;
 	oti->dirtree.base =  NULL;
 	oti->dirmeta.base = NULL;
 
@@ -113,7 +114,7 @@ static void otfs_free_inode(struct inode *inode)
 {
 	struct otfs_inode *oti = OTFS_I(inode);
 
-	if (S_ISLNK(inode->i_mode))
+	if (S_ISLNK(inode->i_mode) && inode->i_link)
 		kfree(inode->i_link);
 
 	ot_ref_vfree(oti->dirtree);
