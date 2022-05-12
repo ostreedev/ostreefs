@@ -839,8 +839,7 @@ static int otfs_open_file(struct inode *inode, struct file *file)
 	if (WARN_ON(file == NULL))
 		return -EIO;
 
-	/* TODO: O_RDWR? */
-	if (file->f_flags & (O_WRONLY | O_CREAT | O_EXCL | O_TRUNC))
+	if (file->f_flags & (O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC))
 		return -EROFS;
 
 	real_file = otfs_open_object (fsi->object_dir, ino_info->object_id, ".file", file->f_flags);
