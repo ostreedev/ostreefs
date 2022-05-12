@@ -965,8 +965,6 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	int ret;
 	int res;
 	u8 *commit_data = NULL;
-	u8 *dirtree_data = NULL;
-	u8 *dirmeta_data = NULL;
 	struct inode *inode;
 	OtCommitRef commit;
 	OtChecksumRef root_contents;
@@ -1029,10 +1027,6 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	fsi->object_dir = object_dir;
 	return 0;
 fail:
-	if (dirmeta_data)
-		kvfree(dirmeta_data);
-	if (dirtree_data)
-		kvfree(dirtree_data);
 	if (commit_data)
 		kvfree(commit_data);
 	if (object_dir)
