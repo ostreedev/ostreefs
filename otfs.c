@@ -779,8 +779,58 @@ static loff_t otfs_dir_llseek(struct file *file, loff_t offset, int origin)
 
 static ssize_t otfs_listxattr(struct dentry *dentry, char *names, size_t size)
 {
-	/* TODO */
-	return -EIO;
+	struct inode *inode = d_inode(dentry);
+	struct otfs_inode *oti = OTFS_I(inode);
+	struct otfs_info *fsi = inode->i_sb->s_fs_info;
+	int res;
+
+	if (S_ISDIR(inode->i_mode)) {
+		OtArrayofXattrRef xattrs;
+		size_t n_xattrs = 0;
+		size_t required_size = 0;
+		char *dest;
+		size_t i;
+
+		if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
+			n_xattrs = ot_arrayof_xattr_get_length(xattrs);
+
+		for (i = 0; i < n_xattrs; i++) {
+			OtXattrRef xattr;
+			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
+				size_t name_len;
+				const u8 *name;
+				name = ot_xattr_get_name (xattr, &name_len);
+				if (name != NULL)
+					required_size += name_len + 1;
+			}
+		}
+		if (size < required_size)
+			return -ERANGE;
+		dest = names;
+		for (i = 0; i < n_xattrs; i++) {
+			OtXattrRef xattr;
+			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
+				size_t name_len;
+				const u8 *name;
+				name = ot_xattr_get_name (xattr, &name_len);
+				if (name != NULL) {
+					memcpy(dest, name, name_len);
+					dest[name_len] = 0;
+					dest += name_len + 1;
+				}
+			}
+		}
+
+		return required_size;
+
+	} else {
+		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_RDONLY);
+		if (IS_ERR(f))
+			return PTR_ERR(f);
+		res = vfs_listxattr(f->f_path.dentry, names, size);
+		fput(f);
+		return res;
+	}
 }
 
 static ssize_t otfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
