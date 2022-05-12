@@ -29,8 +29,6 @@ MODULE_AUTHOR("Alexander Larsson <alexl@redhat.com>");
 #define OTFS_MAGIC 0x055245638
 
 struct otfs_info {
-	struct vfsmount *root_mnt;
-
 	char *object_dir_path;
 	char *commit_id;
 	struct file *object_dir;
@@ -1005,8 +1003,6 @@ static void otfs_kill_sb(struct super_block *sb)
 {
 	struct otfs_info *fsi = sb->s_fs_info;
 
-	if (fsi->root_mnt)
-		kern_unmount(fsi->root_mnt);
 	if (fsi->object_dir_path)
 		kfree(fsi->object_dir_path);
 	if (fsi->object_dir)
