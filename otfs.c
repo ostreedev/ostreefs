@@ -20,6 +20,7 @@
 #include <linux/statfs.h>
 #include <linux/string.h>
 #include <linux/version.h>
+#include <linux/vmalloc.h>
 #include <linux/xattr.h>
 
 #include "ostree.h"
@@ -59,10 +60,10 @@ static const struct address_space_operations otfs_aops = {
 	.direct_IO = noop_direct_IO,
 };
 
-static void ot_ref_kvfree(OtRef ref)
+static void ot_ref_vfree(OtRef ref)
 {
 	if (ref.base)
-		kvfree(ref.base);
+		vfree(ref.base);
 }
 
 static int otfs_show_options(struct seq_file *m, struct dentry *root)
@@ -115,8 +116,8 @@ static void otfs_free_inode(struct inode *inode)
 	if (S_ISLNK(inode->i_mode))
 		kfree(inode->i_link);
 
-	ot_ref_kvfree(oti->dirtree);
-	ot_ref_kvfree(oti->dirmeta);
+	ot_ref_vfree(oti->dirtree);
+	ot_ref_vfree(oti->dirmeta);
 
 	kmem_cache_free(otfs_inode_cachep, oti);
 }
@@ -223,7 +224,7 @@ static int otfs_read_object (struct file *object_dir, const char *object_id, con
 
  fail:
 	if (buf)
-		kvfree(buf);
+		vfree(buf);
 
 	if (f)
 		fput(f);
@@ -251,7 +252,7 @@ static int otfs_read_dirtree_object (struct file *object_dir, OtChecksumRef comm
 		return res;
 
 	if (!ot_tree_meta_from_data (data, res, &treemetav)) {
-		kvfree(data);
+		vfree(data);
 		return -EIO;
 	}
 
@@ -271,7 +272,7 @@ static int otfs_read_dirmeta_object (struct file *object_dir, OtChecksumRef comm
 		return res;
 
 	if (!ot_dir_meta_from_data (data, res, &dirmetav)) {
-		kvfree(data);
+		vfree(data);
 		return -EIO;
 	}
 
@@ -457,8 +458,8 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 
 	return inode;
  fail:
-	ot_ref_kvfree(dirtree);
-	ot_ref_kvfree(dirmeta);
+	ot_ref_vfree(dirtree);
+	ot_ref_vfree(dirmeta);
 
 	return ERR_PTR(ret);
 }
@@ -1028,7 +1029,7 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	return 0;
 fail:
 	if (commit_data)
-		kvfree(commit_data);
+		vfree(commit_data);
 	if (object_dir)
 		fput(object_dir);
 	return ret;
