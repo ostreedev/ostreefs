@@ -471,15 +471,6 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 	return ERR_PTR(ret);
 }
 
-static int otfs_setxattr(const struct xattr_handler *handler,
-			struct user_namespace *mnt_userns,
-			struct dentry *unused, struct inode *inode,
-			const char *name, const void *value, size_t size,
-			int flags)
-{
-	return -EROFS;
-}
-
 static int otfs_getxattr(const struct xattr_handler *handler,
 			struct dentry *unused2, struct inode *inode,
 			const char *name, void *value, size_t size)
@@ -533,65 +524,12 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 static const struct xattr_handler otfs_xattr_handler = {
 	.prefix = "", /* catch all */
 	.get = otfs_getxattr,
-	.set = otfs_setxattr,
 };
 
 static const struct xattr_handler *otfs_xattr_handlers[] = {
 	&otfs_xattr_handler,
 	NULL,
 };
-
-static int otfs_rmdir(struct inode *ino, struct dentry *dir)
-{
-	return -EROFS;
-}
-
-static int otfs_rename(struct user_namespace *userns, struct inode *source_ino,
-		      struct dentry *src_dir, struct inode *target_ino,
-		      struct dentry *target, unsigned int flags)
-{
-	return -EROFS;
-}
-
-static int otfs_link(struct dentry *src, struct inode *i, struct dentry *target)
-{
-	return -EROFS;
-}
-
-static int otfs_unlink(struct inode *inode, struct dentry *dir)
-{
-	return -EROFS;
-}
-
-static int otfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
-		     struct dentry *dentry, umode_t mode, dev_t dev)
-{
-	return -EROFS;
-}
-
-static int otfs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-		     struct dentry *dentry, umode_t mode)
-{
-	return -EROFS;
-}
-
-static int otfs_create(struct user_namespace *mnt_userns, struct inode *dir,
-		      struct dentry *dentry, umode_t mode, bool excl)
-{
-	return -EROFS;
-}
-
-static int otfs_symlink(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, const char *symname)
-{
-	return -EROFS;
-}
-
-static int otfs_tmpfile(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, umode_t mode)
-{
-	return -EROFS;
-}
 
 static int otfs_dir_release(struct inode *inode, struct file *file)
 {
@@ -930,16 +868,7 @@ static const struct file_operations otfs_dir_operations = {
 };
 
 static const struct inode_operations otfs_dir_inode_operations = {
-	.create = otfs_create,
 	.lookup = otfs_lookup,
-	.link = otfs_link,
-	.unlink = otfs_unlink,
-	.symlink = otfs_symlink,
-	.mkdir = otfs_mkdir,
-	.rmdir = otfs_rmdir,
-	.mknod = otfs_mknod,
-	.rename = otfs_rename,
-	.tmpfile = otfs_tmpfile,
 };
 
 static const struct inode_operations otfs_file_inode_operations = {
@@ -964,7 +893,6 @@ static const struct file_operations otfs_file_operations = {
 const struct dentry_operations otfs_dentry_ops = {
         .d_delete       = always_delete_dentry,
 };
-
 
 static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
@@ -1012,7 +940,7 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	/* 0 is root, so start at 1 */
 	atomic64_set (&fsi->inode_counter, 1);
-	inode = otfs_make_dir_inode(sb, NULL, 0, object_dir, 
+	inode = otfs_make_dir_inode(sb, NULL, 0, object_dir,
 				    root_contents, root_metadata);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
