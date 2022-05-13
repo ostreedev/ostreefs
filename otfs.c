@@ -966,6 +966,7 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_time_gran = 1;
 	sb->s_d_op = &otfs_dentry_ops;
 
+	vfree(commit_data);
 	fsi->object_dir = object_dir;
 	return 0;
 fail:
