@@ -518,7 +518,7 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 			}
 		}
 	} else {
-		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_RDONLY);
+		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_PATH);
 		if (IS_ERR(f))
 			return PTR_ERR(f);
 
@@ -832,7 +832,7 @@ static ssize_t otfs_listxattr(struct dentry *dentry, char *names, size_t size)
 		return required_size;
 
 	} else {
-		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_RDONLY);
+		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_PATH);
 		if (IS_ERR(f))
 			return PTR_ERR(f);
 		res = vfs_listxattr(f->f_path.dentry, names, size);
