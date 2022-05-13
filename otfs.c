@@ -624,9 +624,6 @@ struct dentry *otfs_lookup(struct inode *dir, struct dentry *dentry,
 		return ERR_PTR(-EIO);
 	n_dirs = ot_arrayof_tree_dir_get_length (dirs);
 
-	if (!dentry->d_sb->s_d_op)
-		d_set_d_op(dentry, &simple_dentry_operations);
-
 	for (i = 0; i < n_files; i++) {
 		OtTreeFileRef treefile;
 		size_t name_len;
@@ -964,6 +961,10 @@ static const struct file_operations otfs_file_operations = {
 	.open = otfs_open_file,
 };
 
+const struct dentry_operations otfs_dentry_ops = {
+        .d_delete       = always_delete_dentry,
+};
+
 
 static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
@@ -1031,6 +1032,7 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_xattr = otfs_xattr_handlers;
 
 	sb->s_time_gran = 1;
+	sb->s_d_op = &otfs_dentry_ops;
 
 	fsi->object_dir = object_dir;
 	return 0;
