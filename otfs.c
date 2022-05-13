@@ -933,6 +933,9 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	/* Set up the inode allocator early */
 	sb->s_op = &otfs_ops;
+	sb->s_xattr = otfs_xattr_handlers;
+	sb->s_flags |= SB_RDONLY;
+	sb->s_magic = OTFS_MAGIC;
 
 	f = filp_open(fsi->object_dir_path, O_PATH, 0);
 	if (IS_ERR(f)) {
@@ -971,9 +974,6 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_blocksize = PAGE_SIZE;
 	sb->s_blocksize_bits = PAGE_SHIFT;
-	sb->s_flags |= SB_RDONLY;
-	sb->s_magic = OTFS_MAGIC;
-	sb->s_xattr = otfs_xattr_handlers;
 
 	sb->s_time_gran = 1;
 
