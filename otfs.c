@@ -910,10 +910,6 @@ static const struct file_operations otfs_file_operations = {
 	.open = otfs_open_file,
 };
 
-const struct dentry_operations otfs_dentry_ops = {
-        .d_delete       = always_delete_dentry,
-};
-
 static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct otfs_info *fsi = sb->s_fs_info;
@@ -980,7 +976,6 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_xattr = otfs_xattr_handlers;
 
 	sb->s_time_gran = 1;
-	sb->s_d_op = &otfs_dentry_ops;
 
 	vfree(commit_data);
 	fsi->object_dir = object_dir;
@@ -1020,7 +1015,7 @@ static struct file_system_type otfs_type = {
 	.name = "ostreefs",
 	.init_fs_context = otfs_init_fs_context,
 	.parameters = otfs_parameters,
-	.kill_sb = kill_litter_super,
+	.kill_sb = kill_anon_super,
 	.fs_flags = FS_USERNS_MOUNT,
 };
 
