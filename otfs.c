@@ -62,8 +62,10 @@ static const struct address_space_operations otfs_aops = {
 
 static void ot_ref_vfree(OtRef ref)
 {
-	if (ref.base)
+	if (ref.base) {
 		vfree(ref.base);
+		ref.base = NULL;
+	}
 }
 
 static int otfs_show_options(struct seq_file *m, struct dentry *root)
@@ -109,8 +111,7 @@ static struct inode *otfs_alloc_inode(struct super_block *sb)
 	return &oti->vfs_inode;
 }
 
-
-static void otfs_free_inode(struct inode *inode)
+static void otfs_destroy_inode(struct inode *inode)
 {
 	struct otfs_inode *oti = OTFS_I(inode);
 
@@ -119,6 +120,11 @@ static void otfs_free_inode(struct inode *inode)
 
 	ot_ref_vfree(oti->dirtree);
 	ot_ref_vfree(oti->dirmeta);
+}
+
+static void otfs_free_inode(struct inode *inode)
+{
+	struct otfs_inode *oti = OTFS_I(inode);
 
 	kmem_cache_free(otfs_inode_cachep, oti);
 }
@@ -128,9 +134,9 @@ static const struct super_operations otfs_ops = {
 	.drop_inode = generic_delete_inode,
 	.show_options = otfs_show_options,
 	.alloc_inode = otfs_alloc_inode,
+	.destroy_inode = otfs_destroy_inode,
 	.free_inode = otfs_free_inode,
 };
-
 
 enum otfs_param {
 	Opt_object_dir,
