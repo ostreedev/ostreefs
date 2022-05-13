@@ -129,7 +129,23 @@ static void otfs_free_inode(struct inode *inode)
 	kmem_cache_free(otfs_inode_cachep, oti);
 }
 
+static void otfs_put_super(struct super_block *sb)
+{
+	struct otfs_info *fsi = sb->s_fs_info;
+
+	if (fsi->object_dir_path)
+		kfree(fsi->object_dir_path);
+	if (fsi->object_dir)
+		fput(fsi->object_dir);
+	if (fsi->commit_id)
+		kfree(fsi->commit_id);
+
+	kfree(fsi);
+	sb->s_fs_info = NULL;
+}
+
 static const struct super_operations otfs_ops = {
+	.put_super = otfs_put_super,
 	.statfs = otfs_statfs,
 	.drop_inode = generic_delete_inode,
 	.show_options = otfs_show_options,
@@ -1000,26 +1016,11 @@ static int otfs_init_fs_context(struct fs_context *fc)
 	return 0;
 }
 
-static void otfs_kill_sb(struct super_block *sb)
-{
-	struct otfs_info *fsi = sb->s_fs_info;
-
-	if (fsi->object_dir_path)
-		kfree(fsi->object_dir_path);
-	if (fsi->object_dir)
-		fput(fsi->object_dir);
-	if (fsi->commit_id)
-		kfree(fsi->commit_id);
-
-	kfree(fsi);
-	kill_litter_super(sb);
-}
-
 static struct file_system_type otfs_type = {
 	.name = "ostreefs",
 	.init_fs_context = otfs_init_fs_context,
 	.parameters = otfs_parameters,
-	.kill_sb = otfs_kill_sb,
+	.kill_sb = kill_litter_super,
 	.fs_flags = FS_USERNS_MOUNT,
 };
 
