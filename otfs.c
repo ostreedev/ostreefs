@@ -287,6 +287,35 @@ static int otfs_read_dirmeta_object (struct file *object_dir, OtChecksumRef comm
 	return 0;
 }
 
+static struct inode *otfs_new_inode(struct super_block *sb,
+				    const struct inode *dir,
+				    ino_t ino_num,
+				    mode_t mode)
+{
+	struct inode *inode;
+	struct timespec64 ostree_time = {0, 0};
+
+	inode = new_inode(sb);
+	if (inode == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	inode->i_ino = ino_num;
+
+	inode_init_owner(&init_user_ns, inode, dir, mode);
+	inode->i_mapping->a_ops = &otfs_aops;
+	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
+	mapping_set_unevictable(inode->i_mapping);
+
+	set_nlink(inode, 1);
+	inode->i_mode = mode;
+	inode->i_rdev = 0;
+	inode->i_atime = ostree_time;
+	inode->i_mtime = ostree_time;
+	inode->i_ctime = ostree_time;
+
+	return inode;
+}
+
 static struct inode *otfs_make_file_inode(struct super_block *sb,
 					 const struct inode *dir,
 					 ino_t ino_num,
@@ -301,7 +330,6 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	struct inode *inode;
 	char *target_link = NULL;
 	DEFINE_DELAYED_CALL(done);
-	struct timespec64 ostree_time = {0, 0};
 	char object_id[OSTREE_SHA256_STRING_LEN+1];
 
 	ot_checksum_to_string (file_csum, object_id);
@@ -334,30 +362,19 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 		do_delayed_call(&done);
 	}
 
-	inode = new_inode(sb);
-	if (inode == NULL) {
-		ret = -ENOMEM;
+	inode = otfs_new_inode(sb, dir, ino_num, stat.mode);
+	if (IS_ERR(inode)) {
+		ret = PTR_ERR(inode);
 		goto fail;
 	}
 
 	oti = OTFS_I(inode);
 
-	inode_init_owner(&init_user_ns, inode, dir, stat.mode);
-	inode->i_mapping->a_ops = &otfs_aops;
-	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
-	mapping_set_unevictable(inode->i_mapping);
-
 	memcpy (oti->object_id, object_id, sizeof(object_id));
 
-	inode->i_ino = ino_num;
-	set_nlink(inode, 1);
-	inode->i_rdev = 0;
 	inode->i_uid = stat.uid;
 	inode->i_gid = stat.gid;
-	inode->i_mode = stat.mode;
-	inode->i_atime = ostree_time;
-	inode->i_mtime = ostree_time;
-	inode->i_ctime = ostree_time;
+
 	if (S_ISLNK(stat.mode)) {
 		inode->i_link = target_link; /* transfer ownership */
 		inode->i_op = &simple_symlink_inode_operations;
@@ -396,7 +413,6 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 	OtDirMetaRef dirmeta = { NULL, 0 };
 	u32 uid, gid, mode;
 	int res;
-	struct timespec64 ostree_time = {0, 0};
 	u64 n_inos;
 	OtArrayofTreeFileRef files;
 	OtArrayofTreeDirRef dirs;
@@ -426,9 +442,9 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 		goto fail;
 	}
 
-	inode = new_inode(sb);
-	if (inode == NULL) {
-		ret = -ENOMEM;
+	inode = otfs_new_inode(sb, dir, ino_num, mode);
+	if (IS_ERR(inode)) {
+		ret = PTR_ERR(inode);
 		goto fail;
 	}
 
@@ -441,21 +457,9 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 	if (ot_tree_meta_get_dirs (dirtree, &dirs))
 		n_inos += ot_arrayof_tree_dir_get_length (dirs);
 	oti->inode_base = atomic64_add_return (n_inos, &fsi->inode_counter) - n_inos;
-
-	inode_init_owner(&init_user_ns, inode, dir, mode);
-	inode->i_mapping->a_ops = &otfs_aops;
-	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
-	mapping_set_unevictable(inode->i_mapping);
-
-	inode->i_ino = ino_num;
-	set_nlink(inode, 1);
-	inode->i_rdev = 0;
 	inode->i_uid = make_kuid(current_user_ns(), uid);
 	inode->i_gid = make_kgid(current_user_ns(), gid);
-	inode->i_mode = mode;
-	inode->i_atime = ostree_time;
-	inode->i_mtime = ostree_time;
-	inode->i_ctime = ostree_time;
+
 	inode->i_op = &otfs_dir_inode_operations;
 	inode->i_fop = &otfs_dir_operations;
 	inode->i_size = 4096;
