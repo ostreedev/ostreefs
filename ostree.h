@@ -5,6 +5,12 @@
 #define OSTREE_SHA256_DIGEST_LEN 32
 #define OSTREE_SHA256_STRING_LEN 64
 
+struct OtXAttrData {
+	const char *name;
+	size_t size;
+	char *value;
+};
+
 typedef struct {
 	const u8 *base;
 	size_t size;
@@ -25,6 +31,21 @@ __pure static inline u64 ot_ref_read_unaligned_le(const u8 *bytes, u32 size)
 	}
 }
 
+static inline void ot_ref_write_unaligned_le(u8 *bytes, u32 size, u64 value)
+{
+	if (size >= 4) {
+		if (size == 8)
+			put_unaligned_le64(value, bytes);
+		else
+			put_unaligned_le32((u32)value, bytes);
+	} else  {
+		if (size == 2)
+			put_unaligned_le16((u16)value, bytes);
+		else
+			bytes[0] = (u8)value;
+	}
+}
+
 __attribute_const__ static inline u32 ot_ref_get_offset_size(size_t size)
 {
 	if (size > U16_MAX) {
@@ -38,6 +59,20 @@ __attribute_const__ static inline u32 ot_ref_get_offset_size(size_t size)
 		else
 			return 1;
 	}
+}
+
+static inline size_t ot_variant_total_size(size_t body_size, size_t num_offsets)
+{
+	if (body_size + 1 * num_offsets <= U8_MAX)
+		return body_size + 1 * num_offsets;
+
+	if (body_size + 2 * num_offsets <= U16_MAX)
+		return body_size + 2 * num_offsets;
+
+	if (body_size + 4 * num_offsets <= U32_MAX)
+		return body_size + 4 * num_offsets;
+
+	return body_size + 8 * num_offsets;
 }
 
 __pure static inline u64
@@ -204,6 +239,25 @@ static inline const u8 *ot_xattr_get_value(OtXattrRef v, size_t *len)
 	return STRUCT_MEMBER_P(v.base, start);
 }
 
+static inline size_t ot_xattr_compute_size(const char *name, size_t data_size)
+{
+	size_t name_len = strlen(name) + 1;
+	return ot_variant_total_size(name_len + data_size, 1);
+}
+
+static inline size_t ot_xattr_serialize(u8 *buf, const char *name, const u8 *data, size_t data_size)
+{
+	size_t name_len = strlen(name) + 1;
+	size_t size = ot_xattr_compute_size(name, data_size);
+	u32 offset_size = ot_ref_get_offset_size(size);
+
+	memcpy(buf, name, name_len);
+	memcpy(buf + name_len, data, data_size);
+	ot_ref_write_unaligned_le(buf + name_len + data_size, offset_size, name_len);
+
+	return size;
+}
+
 /************** OtArrayofXattr *******************/
 #define OT_ARRAYOF_XATTR_TYPESTRING "a(ayay)"
 
@@ -212,7 +266,7 @@ typedef OtRef OtArrayofXattrRef;
 static inline bool ot_arrayof_xattr_from_data(const u8 *data, size_t size, OtArrayofXattrRef *out)
 {
 	*out = (OtArrayofXattrRef) { data, size };
-  return true;
+	return true;
 }
 
 static inline size_t ot_arrayof_xattr_get_length(OtArrayofXattrRef v)
@@ -261,14 +315,55 @@ static inline u32 ot_dir_meta_get_mode(OtDirMetaRef v)
 
 static inline bool ot_dir_meta_get_xattrs(OtDirMetaRef v, OtArrayofXattrRef *out)
 {
-	u32 offset_size = ot_ref_get_offset_size (v.size);
 	size_t start = 12;
-	size_t end = v.size - offset_size * 0;
+	size_t end = v.size;
 
 	if (start > end || end > v.size)
 		return false;
 
 	return ot_arrayof_xattr_from_data(STRUCT_MEMBER_P(v.base, start), end - start, out);
+}
+
+static inline int ot_dir_meta_serialize(u32 uid, u32 gid, u32 mode, struct OtXAttrData *xattrs, size_t num_xattr, OtDirMetaRef *out)
+{
+	size_t size, i;
+	u8 *data;
+	size_t array_body_size;
+	size_t array_size;
+
+	array_body_size = 0;
+	array_size = 0;
+	if (num_xattr > 0) {
+		for (i = 0; i < num_xattr; i++)
+			array_body_size += ot_xattr_compute_size(xattrs[i].name, xattrs[i].size);
+		array_size = ot_variant_total_size(array_body_size, num_xattr);
+	}
+
+	size = 12 + array_size;
+
+	data = kvmalloc(size, GFP_KERNEL);
+	if (data == NULL) {
+		return -ENOMEM;
+	}
+
+	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(uid);
+	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(gid);
+	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(mode);
+
+	if (num_xattr > 0) {
+		u32 array_offset_size = ot_ref_get_offset_size(array_size);
+		u8 *xattrs_data_start = data + 12;
+		u8 *xattrs_data;
+
+		for (xattrs_data = xattrs_data_start, i = 0; i < num_xattr; i++) {
+			xattrs_data += ot_xattr_serialize(xattrs_data, xattrs[i].name, xattrs[i].value, xattrs[i].size);
+			ot_ref_write_unaligned_le(xattrs_data_start + array_body_size + i * array_offset_size, array_offset_size, xattrs_data - xattrs_data_start);
+		}
+	}
+
+	out->base = data;
+	out->size = size;
+	return 0;
 }
 
 
