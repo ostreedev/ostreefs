@@ -515,11 +515,14 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 				const u8 *this_name, *this_value;
 
 				this_name = ot_xattr_get_name (xattr, &this_name_len);
-				if (name_len != this_name_len ||
+				if (name == NULL || name_len != this_name_len ||
 				    memcmp(this_name, name, name_len) != 0)
 					continue;
 
 				this_value = ot_xattr_get_value (xattr, &this_value_len);
+				if (this_value == NULL)
+					continue;
+
 				if (size == 0)
 					return this_value_len;
 				if (size  < this_value_len + 1)
