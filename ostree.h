@@ -287,6 +287,8 @@ static inline bool ot_arrayof_xattr_get_at(OtArrayofXattrRef v, size_t index, Ot
 /************** OtDirMeta *******************/
 #define OT_DIR_META_TYPESTRING "(uuua(ayay))"
 
+/* Note: This is also used for the header of file content. */
+
 typedef OtRef OtDirMetaRef;
 
 static inline bool ot_dir_meta_from_data(const u8 *data, size_t size, OtDirMetaRef *out)

@@ -17,6 +17,7 @@
 #include <linux/init.h>
 #include <linux/kernel_read_file.h>
 #include <linux/pagemap.h>
+#include <linux/sort.h>
 #include <linux/statfs.h>
 #include <linux/string.h>
 #include <linux/version.h>
@@ -305,6 +306,156 @@ static int otfs_read_dirmeta_object (struct file *object_dir, OtChecksumRef comm
 	return 0;
 }
 
+static ssize_t listxattr(struct dentry *dentry, char **bufp)
+{
+	ssize_t len;
+	ssize_t ret;
+	char *buf;
+	struct inode *inode;
+
+	inode = d_inode(dentry);
+	len = 0;
+
+	inode_lock_shared(inode);
+
+	len = vfs_listxattr(dentry, NULL, 0);
+	if (len <= 0) {
+		ret = len;
+		goto out;
+	}
+
+	if (len > XATTR_LIST_MAX) {
+		ret = -E2BIG;
+		goto out;
+	}
+
+	/* We're holding i_rwsem - use GFP_NOFS. */
+	buf = kvmalloc(len, GFP_KERNEL | GFP_NOFS);
+	if (buf == NULL) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	len = vfs_listxattr(dentry, buf, len);
+	if (len <= 0) {
+		kvfree(buf);
+		ret = len;
+		goto out;
+	}
+
+	*bufp = buf;
+	ret = len;
+
+ out:
+	inode_unlock_shared(inode);
+	return ret;
+}
+
+static int
+xattr_data_cmp(const struct OtXAttrData *a, const struct OtXAttrData *b)
+{
+	return strcmp(a->name, b->name);
+}
+
+static void
+xattrs_data_free(struct OtXAttrData *data, size_t num_xattr, char *names)
+{
+	size_t i;
+	if (data) {
+		for (i = 0; i < num_xattr; i++)
+			kvfree(data[i].value);
+		kvfree(data);
+	}
+	if (names)
+		kvfree(names);
+}
+
+static ssize_t get_xattrs(struct dentry *dentry, char **names_out, struct OtXAttrData **data_out)
+{
+	char *names = NULL;
+	const char *name;
+	ssize_t names_len;
+	ssize_t remaining;
+	ssize_t ret;
+	size_t slen;
+	ssize_t size, value_size;
+	char *value = NULL;
+	size_t num_xattrs, i = 0;
+	struct OtXAttrData *data = NULL;
+
+	names_len = listxattr(dentry, &names);
+	if (names_len < 0)
+		return (int)names_len;
+
+	if (names_len == 0) {
+		*names_out = NULL;
+		*data_out = NULL;
+		return 0;
+	}
+
+	num_xattrs = 0;
+	for (name = names, remaining = names_len; remaining; name += slen) {
+		slen = strnlen(name, remaining) + 1;
+		/* underlying fs providing us with an broken xattr list? */
+		if (WARN_ON(slen > remaining)) {
+			ret = -EIO;
+			goto fail;
+		}
+		num_xattrs++;
+		remaining -= slen;
+	}
+
+	data = kvmalloc_array(num_xattrs, sizeof(struct OtXAttrData), GFP_KERNEL);
+	if (!data) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+
+	for (name = names, remaining = names_len; remaining; name += slen) {
+		slen = strnlen(name, remaining) + 1;
+		remaining -= slen;
+
+		size = vfs_getxattr(&init_user_ns, dentry, name, NULL, 0);
+		if (size < 0) {
+			ret = size;
+			goto fail;
+		}
+
+		value_size = size;
+		value = kvmalloc(value_size, GFP_KERNEL);
+
+		size = vfs_getxattr(&init_user_ns, dentry, name, value, value_size);
+		if (size < 0) {
+			kvfree(value);
+			ret = size;
+			goto fail;
+		}
+
+		data[i].name = name;
+		data[i].value = value;
+		data[i].size = size;
+		i++;
+	}
+
+	sort(data, num_xattrs, sizeof(struct OtXAttrData), (cmp_func_t)xattr_data_cmp, NULL);
+
+	*names_out = names;
+	*data_out = data;
+	return num_xattrs;
+
+ fail:
+	while (i > 0) {
+		kvfree(data[i].value);
+		i--;
+	}
+
+	if (data)
+		kvfree(data);
+	if (names)
+		kvfree(names);
+	return ret;
+}
+
 static struct inode *otfs_new_inode(struct super_block *sb,
 				    const struct inode *dir,
 				    ino_t ino_num,
@@ -349,6 +500,10 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	char *target_link = NULL;
 	DEFINE_DELAYED_CALL(done);
 	char object_id[OSTREE_SHA256_STRING_LEN+1];
+	char *xattr_names = NULL;
+	struct OtXAttrData *xattr_data = NULL;
+	OtDirMetaRef filemeta = { NULL, 0};
+	ssize_t num_xattr = 0;
 
 	ot_checksum_to_string (file_csum, object_id);
 
@@ -380,6 +535,22 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 		do_delayed_call(&done);
 	}
 
+	num_xattr = get_xattrs(object_file->f_path.dentry, &xattr_names, &xattr_data);
+	if (num_xattr < 0) {
+		ret = num_xattr;
+		goto fail;
+	}
+
+	err = ot_dir_meta_serialize(from_kuid(&init_user_ns, stat.uid),
+				    from_kgid(&init_user_ns, stat.gid),
+				    stat.mode,
+				    xattr_data, num_xattr, &filemeta);
+	xattrs_data_free(xattr_data, num_xattr, xattr_names);
+	if (err < 0) {
+		ret = err;
+		goto fail;
+	}
+
 	inode = otfs_new_inode(sb, dir, ino_num, stat.mode);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
@@ -389,6 +560,7 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	oti = OTFS_I(inode);
 
 	memcpy (oti->object_id, object_id, sizeof(object_id));
+	oti->dirmeta = filemeta;
 
 	inode->i_uid = stat.uid;
 	inode->i_gid = stat.gid;
@@ -406,6 +578,8 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	return inode;
 
  fail:
+	ot_ref_kvfree(filemeta);
+
 	if (object_file)
 		fput(object_file);
 	if (target_link)
@@ -413,8 +587,6 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 
 	return ERR_PTR(ret);
 }
-
-
 
 static struct inode *otfs_make_dir_inode(struct super_block *sb,
 					 const struct inode *dir,
@@ -498,49 +670,36 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 			const char *name, void *value, size_t size)
 {
 	struct otfs_inode *oti = OTFS_I(inode);
-	struct otfs_info *fsi = inode->i_sb->s_fs_info;
 	size_t name_len = strlen(name) + 1; /* Include the terminating zero */
 	size_t i;
-	int res;
+	OtArrayofXattrRef xattrs;
+	size_t n_xattrs = 0;
 
-	if (S_ISDIR(inode->i_mode)) {
-		OtArrayofXattrRef xattrs;
-		size_t n_xattrs = 0;
+	if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
+		n_xattrs = ot_arrayof_xattr_get_length(xattrs);
 
-		if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
-			n_xattrs = ot_arrayof_xattr_get_length(xattrs);
+	for (i = 0; i < n_xattrs; i++) {
+		OtXattrRef xattr;
+		if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
+			size_t this_name_len, this_value_len;
+			const u8 *this_name, *this_value;
 
-		for (i = 0; i < n_xattrs; i++) {
-			OtXattrRef xattr;
-			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
-				size_t this_name_len, this_value_len;
-				const u8 *this_name, *this_value;
+			this_name = ot_xattr_get_name (xattr, &this_name_len);
+			if (name == NULL || name_len != this_name_len ||
+			    memcmp(this_name, name, name_len) != 0)
+				continue;
 
-				this_name = ot_xattr_get_name (xattr, &this_name_len);
-				if (name == NULL || name_len != this_name_len ||
-				    memcmp(this_name, name, name_len) != 0)
-					continue;
+			this_value = ot_xattr_get_value (xattr, &this_value_len);
+			if (this_value == NULL)
+				continue;
 
-				this_value = ot_xattr_get_value (xattr, &this_value_len);
-				if (this_value == NULL)
-					continue;
-
-				if (size == 0)
-					return this_value_len;
-				if (size  < this_value_len + 1)
-					return -E2BIG;
-				memcpy(value, this_value, this_value_len);
+			if (size == 0)
 				return this_value_len;
-			}
+			if (size  < this_value_len)
+				return -E2BIG;
+			memcpy(value, this_value, this_value_len);
+			return this_value_len;
 		}
-	} else {
-		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_PATH|O_NOFOLLOW);
-		if (IS_ERR(f))
-			return PTR_ERR(f);
-
-		res = vfs_getxattr(&init_user_ns, f->f_path.dentry, name, value, size);
-		fput(f);
-		return res;
 	}
 
 	return -ENODATA;
@@ -749,56 +908,42 @@ static ssize_t otfs_listxattr(struct dentry *dentry, char *names, size_t size)
 {
 	struct inode *inode = d_inode(dentry);
 	struct otfs_inode *oti = OTFS_I(inode);
-	struct otfs_info *fsi = inode->i_sb->s_fs_info;
-	int res;
+	OtArrayofXattrRef xattrs;
+	size_t n_xattrs = 0;
+	size_t required_size = 0;
+	char *dest;
+	size_t i;
 
-	if (S_ISDIR(inode->i_mode)) {
-		OtArrayofXattrRef xattrs;
-		size_t n_xattrs = 0;
-		size_t required_size = 0;
-		char *dest;
-		size_t i;
+	if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
+		n_xattrs = ot_arrayof_xattr_get_length(xattrs);
 
-		if (ot_dir_meta_get_xattrs(oti->dirmeta, &xattrs))
-			n_xattrs = ot_arrayof_xattr_get_length(xattrs);
-
-		for (i = 0; i < n_xattrs; i++) {
-			OtXattrRef xattr;
-			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
-				size_t name_len;
-				const u8 *name;
-				name = ot_xattr_get_name (xattr, &name_len);
-				if (name != NULL)
-					required_size += name_len + 1;
-			}
+	for (i = 0; i < n_xattrs; i++) {
+		OtXattrRef xattr;
+		if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
+			size_t name_len;
+			const u8 *name;
+			name = ot_xattr_get_name (xattr, &name_len);
+			if (name != NULL)
+				required_size += name_len;
 		}
-		if (size < required_size)
-			return -ERANGE;
-		dest = names;
-		for (i = 0; i < n_xattrs; i++) {
-			OtXattrRef xattr;
-			if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
-				size_t name_len;
-				const u8 *name;
-				name = ot_xattr_get_name (xattr, &name_len);
-				if (name != NULL) {
-					memcpy(dest, name, name_len);
-					dest[name_len] = 0;
-					dest += name_len + 1;
-				}
-			}
-		}
-
-		return required_size;
-
-	} else {
-		struct file *f = otfs_open_object(fsi->object_dir, oti->object_id, ".file", O_PATH|O_NOFOLLOW);
-		if (IS_ERR(f))
-			return PTR_ERR(f);
-		res = vfs_listxattr(f->f_path.dentry, names, size);
-		fput(f);
-		return res;
 	}
+	if (size < required_size)
+		return -ERANGE;
+	dest = names;
+	for (i = 0; i < n_xattrs; i++) {
+		OtXattrRef xattr;
+		if (ot_arrayof_xattr_get_at(xattrs, i, &xattr)) {
+			size_t name_len;
+			const u8 *name;
+			name = ot_xattr_get_name (xattr, &name_len);
+			if (name != NULL) {
+				memcpy(dest, name, name_len);
+				dest += name_len;
+			}
+		}
+	}
+
+	return required_size;
 }
 
 static ssize_t otfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
