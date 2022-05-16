@@ -497,7 +497,7 @@ static int otfs_getxattr(const struct xattr_handler *handler,
 {
 	struct otfs_inode *oti = OTFS_I(inode);
 	struct otfs_info *fsi = inode->i_sb->s_fs_info;
-	size_t name_len = strlen(name);
+	size_t name_len = strlen(name) + 1; /* Include the terminating zero */
 	size_t i;
 	int res;
 
