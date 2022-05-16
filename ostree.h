@@ -349,8 +349,8 @@ static inline int ot_dir_meta_serialize(u32 uid, u32 gid, u32 mode, struct OtXAt
 	}
 
 	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(uid);
-	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(gid);
-	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(mode);
+	STRUCT_MEMBER(u32, data, 4) = cpu_to_be32(gid);
+	STRUCT_MEMBER(u32, data, 8) = cpu_to_be32(mode);
 
 	if (num_xattr > 0) {
 		u32 array_offset_size = ot_ref_get_offset_size(array_size);
