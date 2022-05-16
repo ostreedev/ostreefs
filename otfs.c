@@ -31,10 +31,16 @@ MODULE_AUTHOR("Alexander Larsson <alexl@redhat.com>");
 
 #define OTFS_MAGIC 0x055245638
 
+enum ot_repo_mode {
+	ot_repo_mode_bare,
+	ot_repo_mode_bare_user,
+};
+
 struct otfs_info {
 	char *object_dir_path;
 	char *commit_id;
 	struct file *object_dir;
+	enum ot_repo_mode repo_mode;
 
 	atomic64_t inode_counter;
 };
@@ -160,11 +166,13 @@ static const struct super_operations otfs_ops = {
 enum otfs_param {
 	Opt_object_dir,
 	Opt_commit,
+	Opt_repomode,
 };
 
 const struct fs_parameter_spec otfs_parameters[] = {
 	fsparam_string("objectdir", Opt_object_dir),
 	fsparam_string("commit", Opt_commit),
+	fsparam_string("repomode", Opt_repomode),
 	{}
 };
 
@@ -190,6 +198,16 @@ static int otfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		/* Take ownership.  */
 		fsi->commit_id = param->string;
 		param->string = NULL;
+		break;
+	case Opt_repomode:
+		if (strcmp (param->string, "bare") == 0) {
+			fsi->repo_mode = ot_repo_mode_bare;
+		} else if (strcmp (param->string, "bare-user") == 0) {
+			fsi->repo_mode = ot_repo_mode_bare_user;
+		} else {
+			printk(KERN_ERR "Invalid ostreefs repomode %s\n", param->string);
+			return -EINVAL;
+		}
 		break;
 	}
 
@@ -370,6 +388,28 @@ xattrs_data_free(struct OtXAttrData *data, size_t num_xattr, char *names)
 		kvfree(names);
 }
 
+static ssize_t read_xattr(struct dentry *dentry, const char *name, u8 **data_out) {
+	ssize_t size, value_size;
+	u8 *value;
+
+	size = vfs_getxattr(&init_user_ns, dentry, name, NULL, 0);
+	if (size < 0)
+		return size;
+
+	value_size = size;
+	value = kvmalloc(value_size, GFP_KERNEL);
+
+	size = vfs_getxattr(&init_user_ns, dentry, name, value, value_size);
+	if (size < 0) {
+		kvfree(value);
+		return size;
+	}
+
+	*data_out = value;
+
+	return size;
+}
+
 static ssize_t get_xattrs(struct dentry *dentry, char **names_out, struct OtXAttrData **data_out)
 {
 	char *names = NULL;
@@ -378,8 +418,8 @@ static ssize_t get_xattrs(struct dentry *dentry, char **names_out, struct OtXAtt
 	ssize_t remaining;
 	ssize_t ret;
 	size_t slen;
-	ssize_t size, value_size;
-	char *value = NULL;
+	ssize_t size;
+	u8 *value = NULL;
 	size_t num_xattrs, i = 0;
 	struct OtXAttrData *data = NULL;
 
@@ -415,18 +455,8 @@ static ssize_t get_xattrs(struct dentry *dentry, char **names_out, struct OtXAtt
 		slen = strnlen(name, remaining) + 1;
 		remaining -= slen;
 
-		size = vfs_getxattr(&init_user_ns, dentry, name, NULL, 0);
+		size = read_xattr(dentry, name, &value);
 		if (size < 0) {
-			ret = size;
-			goto fail;
-		}
-
-		value_size = size;
-		value = kvmalloc(value_size, GFP_KERNEL);
-
-		size = vfs_getxattr(&init_user_ns, dentry, name, value, value_size);
-		if (size < 0) {
-			kvfree(value);
 			ret = size;
 			goto fail;
 		}
@@ -485,45 +515,55 @@ static struct inode *otfs_new_inode(struct super_block *sb,
 	return inode;
 }
 
-static int reconstruct_filemeta(struct file *object_file, OtDirMetaRef *filemeta_out, loff_t *size_out)
+static int reconstruct_filemeta(struct otfs_info *fsi, struct file *object_file, OtDirMetaRef *filemeta_out, loff_t *size_out)
 {
 	struct kstat stat;
 	char *xattr_names = NULL;
-	struct OtXAttrData *xattr_data = NULL;
-	ssize_t num_xattr = 0;
 	OtDirMetaRef filemeta = { NULL, 0};
-	int ret, err;
+	int err;
 
 	err = vfs_getattr(&object_file->f_path, &stat, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
-	if (err < 0) {
-		ret = err;
-		goto fail;
-	}
+	if (err < 0)
+		return err;
 
-	num_xattr = get_xattrs(object_file->f_path.dentry, &xattr_names, &xattr_data);
-	if (num_xattr < 0) {
-		ret = num_xattr;
-		goto fail;
-	}
+	if (fsi->repo_mode == ot_repo_mode_bare) {
+		struct OtXAttrData *xattr_data = NULL;
+		ssize_t num_xattr = 0;
 
-	err = ot_dir_meta_serialize(from_kuid(&init_user_ns, stat.uid),
-				    from_kgid(&init_user_ns, stat.gid),
-				    stat.mode,
-				    xattr_data, num_xattr, &filemeta);
-	if (err < 0) {
-		ret = err;
-		goto fail;
-	}
+		if (!S_ISLNK(stat.mode) && !S_ISREG(stat.mode))
+			return -EIO;
 
-	xattrs_data_free(xattr_data, num_xattr, xattr_names);
+		num_xattr = get_xattrs(object_file->f_path.dentry, &xattr_names, &xattr_data);
+		if (num_xattr < 0)
+			return num_xattr;
+
+		err = ot_dir_meta_serialize(from_kuid(&init_user_ns, stat.uid),
+					    from_kgid(&init_user_ns, stat.gid),
+					    stat.mode,
+					    xattr_data, num_xattr, &filemeta);
+		xattrs_data_free(xattr_data, num_xattr, xattr_names);
+		if (err < 0)
+			return err;
+	} else { /* ot_repo_mode_bare_user */
+		u8 *data;
+		ssize_t data_size;
+
+		if (!S_ISREG(stat.mode))
+			return -EIO;
+
+		data_size = read_xattr(object_file->f_path.dentry, "user.ostreemeta", &data);
+		if (data_size < 0)
+			return data_size;
+
+		if (!ot_dir_meta_from_data(data, data_size, &filemeta)) {
+			kvfree(data);
+			return -EIO;
+		}
+	}
 
 	*size_out = stat.size;
 	*filemeta_out = filemeta;
 	return 0;
-
- fail:
-	xattrs_data_free(xattr_data, num_xattr, xattr_names);
-	return ret;
 }
 
 
@@ -551,7 +591,7 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	if (IS_ERR(object_file))
 		return ERR_CAST(object_file);
 
-	err = reconstruct_filemeta(object_file, &filemeta, &file_size);
+	err = reconstruct_filemeta(fsi, object_file, &filemeta, &file_size);
 	if (err < 0) {
 		ret = err;
 		goto fail;
@@ -566,15 +606,42 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	}
 
 	if (S_ISLNK(mode)) {
-		const char *link;
-		link = vfs_get_link(object_file->f_path.dentry, &done);
-                if (IS_ERR(link)) {
-			ret = PTR_ERR(link);
-			goto fail;
-		}
+		if (fsi->repo_mode == ot_repo_mode_bare) {
+			const char *link;
+			link = vfs_get_link(object_file->f_path.dentry, &done);
+			if (IS_ERR(link)) {
+				ret = PTR_ERR(link);
+				goto fail;
+			}
 
-		target_link = kstrdup(link, GFP_KERNEL);
-		do_delayed_call(&done);
+			target_link = kstrdup(link, GFP_KERNEL);
+			do_delayed_call(&done);
+		} else { /* ot_repo_mode_bare_user */
+			void *buf = NULL;
+			size_t file_size;
+			int read_bytes;
+			struct file *f;
+
+			f = file_open_root(&(object_file->f_path), "", O_RDONLY, 0);
+			if (IS_ERR(f)) {
+				ret = PTR_ERR(f);
+				goto fail;
+			}
+
+			read_bytes = kernel_read_file(f, 0, &buf, PATH_MAX, &file_size, READING_UNKNOWN);
+			fput(f);
+			if (read_bytes < 0) {
+				ret = read_bytes;
+				goto fail;
+			}
+			if (file_size != read_bytes) {
+				vfree(buf);
+				ret = -EIO;
+				goto fail;
+			}
+			target_link = kstrdup(buf, GFP_KERNEL);
+			vfree(buf);
+		}
 	}
 
 	inode = otfs_new_inode(sb, dir, ino_num, mode);
