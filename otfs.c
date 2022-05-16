@@ -60,10 +60,10 @@ static const struct address_space_operations otfs_aops = {
 	.direct_IO = noop_direct_IO,
 };
 
-static void ot_ref_vfree(OtRef ref)
+static void ot_ref_kvfree(OtRef ref)
 {
 	if (ref.base) {
-		vfree(ref.base);
+		kvfree(ref.base);
 		ref.base = NULL;
 	}
 }
@@ -106,7 +106,9 @@ static struct inode *otfs_alloc_inode(struct super_block *sb)
 
         oti->vfs_inode.i_link = NULL;
 	oti->dirtree.base =  NULL;
+	oti->dirtree.size =  0;
 	oti->dirmeta.base = NULL;
+	oti->dirmeta.size = 0;
 
 	return &oti->vfs_inode;
 }
@@ -118,8 +120,8 @@ static void otfs_destroy_inode(struct inode *inode)
 	if (S_ISLNK(inode->i_mode) && inode->i_link)
 		kfree(inode->i_link);
 
-	ot_ref_vfree(oti->dirtree);
-	ot_ref_vfree(oti->dirmeta);
+	ot_ref_kvfree(oti->dirtree);
+	ot_ref_kvfree(oti->dirmeta);
 }
 
 static void otfs_free_inode(struct inode *inode)
@@ -485,8 +487,8 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 
 	return inode;
  fail:
-	ot_ref_vfree(dirtree);
-	ot_ref_vfree(dirmeta);
+	ot_ref_kvfree(dirtree);
+	ot_ref_kvfree(dirmeta);
 
 	return ERR_PTR(ret);
 }
