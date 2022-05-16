@@ -485,54 +485,19 @@ static struct inode *otfs_new_inode(struct super_block *sb,
 	return inode;
 }
 
-static struct inode *otfs_make_file_inode(struct super_block *sb,
-					 const struct inode *dir,
-					 ino_t ino_num,
-					 OtChecksumRef file_csum)
+static int reconstruct_filemeta(struct file *object_file, OtDirMetaRef *filemeta_out, loff_t *size_out)
 {
-	struct otfs_info *fsi = sb->s_fs_info;
-	struct otfs_inode *oti = NULL;
-	struct file *object_file = NULL;
-	int err;
-	int ret;
 	struct kstat stat;
-	struct inode *inode;
-	char *target_link = NULL;
-	DEFINE_DELAYED_CALL(done);
-	char object_id[OSTREE_SHA256_STRING_LEN+1];
 	char *xattr_names = NULL;
 	struct OtXAttrData *xattr_data = NULL;
-	OtDirMetaRef filemeta = { NULL, 0};
 	ssize_t num_xattr = 0;
-
-	ot_checksum_to_string (file_csum, object_id);
-
-	object_file = otfs_open_object (fsi->object_dir, object_id, ".file", O_PATH|O_NOFOLLOW);
-	if (IS_ERR(object_file))
-		return ERR_CAST(object_file);
+	OtDirMetaRef filemeta = { NULL, 0};
+	int ret, err;
 
 	err = vfs_getattr(&object_file->f_path, &stat, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
 	if (err < 0) {
 		ret = err;
 		goto fail;
-	}
-
-	/* We support only regular and symlink file objects */
-	if (!S_ISLNK(stat.mode) && !S_ISREG(stat.mode)) {
-		ret = -EIO;
-		goto fail;
-	}
-
-	if (S_ISLNK(stat.mode)) {
-		const char *link;
-		link = vfs_get_link(object_file->f_path.dentry, &done);
-                if (IS_ERR(link)) {
-			ret = PTR_ERR(link);
-			goto fail;
-		}
-
-		target_link = kstrdup(link, GFP_KERNEL);
-		do_delayed_call(&done);
 	}
 
 	num_xattr = get_xattrs(object_file->f_path.dentry, &xattr_names, &xattr_data);
@@ -545,13 +510,74 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 				    from_kgid(&init_user_ns, stat.gid),
 				    stat.mode,
 				    xattr_data, num_xattr, &filemeta);
-	xattrs_data_free(xattr_data, num_xattr, xattr_names);
 	if (err < 0) {
 		ret = err;
 		goto fail;
 	}
 
-	inode = otfs_new_inode(sb, dir, ino_num, stat.mode);
+	xattrs_data_free(xattr_data, num_xattr, xattr_names);
+
+	*size_out = stat.size;
+	*filemeta_out = filemeta;
+	return 0;
+
+ fail:
+	xattrs_data_free(xattr_data, num_xattr, xattr_names);
+	return ret;
+}
+
+
+static struct inode *otfs_make_file_inode(struct super_block *sb,
+					 const struct inode *dir,
+					 ino_t ino_num,
+					 OtChecksumRef file_csum)
+{
+	struct otfs_info *fsi = sb->s_fs_info;
+	struct otfs_inode *oti = NULL;
+	struct file *object_file = NULL;
+	int err;
+	int ret;
+	struct inode *inode;
+	char *target_link = NULL;
+	DEFINE_DELAYED_CALL(done);
+	char object_id[OSTREE_SHA256_STRING_LEN+1];
+	OtDirMetaRef filemeta = { NULL, 0};
+	loff_t file_size;
+	u32 mode;
+
+	ot_checksum_to_string (file_csum, object_id);
+
+	object_file = otfs_open_object (fsi->object_dir, object_id, ".file", O_PATH|O_NOFOLLOW);
+	if (IS_ERR(object_file))
+		return ERR_CAST(object_file);
+
+	err = reconstruct_filemeta(object_file, &filemeta, &file_size);
+	if (err < 0) {
+		ret = err;
+		goto fail;
+	}
+
+	mode = ot_dir_meta_get_mode(filemeta);
+
+	/* We support only regular and symlink file objects */
+	if (!S_ISLNK(mode) && !S_ISREG(mode)) {
+		ret = -EIO;
+		goto fail;
+	}
+
+	if (S_ISLNK(mode)) {
+		const char *link;
+		link = vfs_get_link(object_file->f_path.dentry, &done);
+                if (IS_ERR(link)) {
+			ret = PTR_ERR(link);
+			goto fail;
+		}
+
+		target_link = kstrdup(link, GFP_KERNEL);
+		do_delayed_call(&done);
+	}
+
+	inode = otfs_new_inode(sb, dir, ino_num, mode);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
 		goto fail;
@@ -562,15 +588,15 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	memcpy (oti->object_id, object_id, sizeof(object_id));
 	oti->dirmeta = filemeta;
 
-	inode->i_uid = stat.uid;
-	inode->i_gid = stat.gid;
+	inode->i_uid = make_kuid(current_user_ns(), ot_dir_meta_get_uid(filemeta));
+	inode->i_gid = make_kgid(current_user_ns(), ot_dir_meta_get_gid(filemeta));
 
-	if (S_ISLNK(stat.mode)) {
+	if (S_ISLNK(mode)) {
 		inode->i_link = target_link; /* transfer ownership */
 		inode->i_op = &simple_symlink_inode_operations;
 		inode->i_fop = &otfs_file_operations;
 	} else {
-		inode->i_size = stat.size;
+		inode->i_size = file_size;
 		inode->i_op = &otfs_file_inode_operations;
 		inode->i_fop = &otfs_file_operations;
 	}
