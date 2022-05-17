@@ -124,7 +124,7 @@ And, to later revert it, run:
 
 ## Verification status
 
-Ostreefs currently verifies the sh256 checksum of the commit, dirmeta
+Ostreefs currently verifies the sha256 checksum of the commit, dirmeta
 and dirtree objects, which means all directory content is guaranteed to
 match the commit.
 
