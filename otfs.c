@@ -1140,15 +1140,27 @@ static int otfs_release_file(struct inode *inode, struct file *file)
 static int otfs_open_file(struct inode *inode, struct file *file)
 {
 	struct otfs_inode *oti = OTFS_I(inode);
+	struct inode *real_inode;
 	struct file *real_file;
+	int err;
 
 	if (WARN_ON(file == NULL))
 		return -EIO;
 
+	/* Ensure no writes */
 	if (file->f_flags & (O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC))
 		return -EROFS;
 
-	real_file = file_open_root(&oti->nondir.path, "", file->f_flags, 0);
+	/* don't pass these on to underlying fs */
+	file->f_flags &= ~(O_NOCTTY);
+
+	real_inode = d_inode(oti->nondir.path.dentry);
+	err = inode_permission(&init_user_ns, real_inode, MAY_OPEN);
+	if (err < 0)
+		return err;
+
+	real_file = open_with_fake_path(&file->f_path, file->f_flags | OTFS_OPEN_FLAGS, real_inode,
+					current_cred());
 	if (IS_ERR(real_file)) {
 		return PTR_ERR(real_file);
 	}
