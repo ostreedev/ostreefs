@@ -248,7 +248,7 @@ static int otfs_read_object (struct path *object_dir, const char *object_id, con
 	int ret;
 	int read_bytes;
 	uint8_t digest[SHA256_DIGEST_SIZE];
-	char digest_string[OSTREE_SHA256_STRING_LEN + 1]; /* Fits slash and longest extenssion (.dirtree) */
+	char digest_string[OSTREE_SHA256_STRING_LEN + 1];
 
 	f = otfs_open_object(object_dir, object_id, type, O_RDONLY);
 	if (IS_ERR(f))
