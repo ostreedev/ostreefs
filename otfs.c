@@ -38,11 +38,31 @@ enum ot_repo_mode {
 	ot_repo_mode_bare_user,
 };
 
+static const struct constant_table ostreefs_param_repomode[] = {
+	{ "bare", ot_repo_mode_bare },
+	{ "bare-user", ot_repo_mode_bare_user },
+	{}
+};
+
+enum ot_file_verify {
+	ot_file_verify_none,
+	ot_file_verify_once,
+	ot_file_verify_full,
+};
+
+static const struct constant_table ostreefs_param_fileverify[] = {
+	{ "none", ot_file_verify_none },
+	{ "once", ot_file_verify_once },
+	{ "full", ot_file_verify_full },
+	{}
+};
+
 struct otfs_info {
 	char *object_dir_path;
 	struct path object_dir;
 	char *commit_id;
 	enum ot_repo_mode repo_mode;
+	enum ot_file_verify file_verify;
 
 	atomic64_t inode_counter;
 };
@@ -89,6 +109,14 @@ static int otfs_show_options(struct seq_file *m, struct dentry *root)
 
 	seq_printf(m, ",object_dir=%s", fsi->object_dir_path);
 	seq_printf(m, ",commit=%s", fsi->commit_id);
+	if (fsi->repo_mode == ot_repo_mode_bare_user)
+		seq_printf(m, ",repomode=bare-user");
+	if (fsi->file_verify == ot_file_verify_full)
+		seq_printf(m, ",fileverify=full");
+	else if (fsi->file_verify == ot_file_verify_once)
+		seq_printf(m, ",fileverify=once");
+	else if (fsi->file_verify == ot_file_verify_none)
+		seq_printf(m, ",fileverify=none");
 	return 0;
 }
 
@@ -177,12 +205,14 @@ enum otfs_param {
 	Opt_object_dir,
 	Opt_commit,
 	Opt_repomode,
+	Opt_fileverify,
 };
 
 const struct fs_parameter_spec otfs_parameters[] = {
 	fsparam_string("objectdir", Opt_object_dir),
 	fsparam_string("commit", Opt_commit),
-	fsparam_string("repomode", Opt_repomode),
+	fsparam_enum("repomode", Opt_repomode, ostreefs_param_repomode),
+	fsparam_enum("fileverify", Opt_fileverify, ostreefs_param_fileverify),
 	{}
 };
 
@@ -210,14 +240,10 @@ static int otfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		param->string = NULL;
 		break;
 	case Opt_repomode:
-		if (strcmp (param->string, "bare") == 0) {
-			fsi->repo_mode = ot_repo_mode_bare;
-		} else if (strcmp (param->string, "bare-user") == 0) {
-			fsi->repo_mode = ot_repo_mode_bare_user;
-		} else {
-			printk(KERN_ERR "Invalid ostreefs repomode %s\n", param->string);
-			return -EINVAL;
-		}
+		fsi->repo_mode = result.uint_32;
+		break;
+	case Opt_fileverify:
+		fsi->file_verify = result.uint_32;
 		break;
 	}
 
@@ -525,7 +551,7 @@ static struct inode *otfs_new_inode(struct super_block *sb,
 	return inode;
 }
 
-static int reconstruct_filemeta(struct otfs_info *fsi, struct file *object_file, OtDirMetaRef *filemeta_out, loff_t *size_out)
+static int reconstruct_filemeta(struct otfs_info *fsi, struct file *object_file, OtDirMetaRef *filemeta_out, loff_t *size_out, bool *is_verity)
 {
 	struct kstat stat;
 	char *xattr_names = NULL;
@@ -573,9 +599,50 @@ static int reconstruct_filemeta(struct otfs_info *fsi, struct file *object_file,
 
 	*size_out = stat.size;
 	*filemeta_out = filemeta;
+	*is_verity = (stat.attributes & STATX_ATTR_VERITY) != 0;
 	return 0;
 }
 
+#define CHECKSUM_BUF_SIZE (64*1024)
+static int file_content_checksum(struct path *path, struct sha256_state *sha256_ctx) {
+	struct file *file = NULL;
+	u8 *buffer = NULL;
+	loff_t pos;
+	int ret;
+
+	buffer = vmalloc(CHECKSUM_BUF_SIZE);
+	if (buffer == NULL)
+		return -ENOMEM;
+
+	file = file_open_root(path, "", O_RDONLY|OTFS_OPEN_FLAGS, 0);
+	if (IS_ERR(file)) {
+		ret = PTR_ERR(file);
+		goto fail;
+	}
+
+	pos = 0;
+	while (true) {
+		ssize_t bytes = kernel_read(file, buffer, CHECKSUM_BUF_SIZE, &pos);
+		if (bytes < 0) {
+			ret = bytes;
+			goto fail;
+		}
+
+		if (bytes == 0)
+			break;
+
+		sha256_update(sha256_ctx, buffer, bytes);
+	}
+
+	vfree(buffer);
+	fput(file);
+	return 0;
+
+ fail:
+	if (file)
+		fput(file);
+	return ret;
+}
 
 static struct inode *otfs_make_file_inode(struct super_block *sb,
 					 const struct inode *dir,
@@ -596,7 +663,8 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	OtDirMetaRef filemeta = { NULL, 0};
 	loff_t file_size;
 	u32 mode;
-	struct sha256_state sha256_ctx;
+	bool is_fsverity;
+	bool do_verify;
 
 	ot_checksum_to_string (file_csum, object_id);
 
@@ -604,7 +672,7 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	if (IS_ERR(object_file))
 		return ERR_CAST(object_file);
 
-	err = reconstruct_filemeta(fsi, object_file, &filemeta, &file_size);
+	err = reconstruct_filemeta(fsi, object_file, &filemeta, &file_size, &is_fsverity);
 	if (err < 0) {
 		ret = err;
 		goto fail;
@@ -657,20 +725,55 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 		}
 	}
 
-	/* Compute file header for checksum validation */
-	sha256_init(&sha256_ctx);
+	do_verify = true;
 
-	err =  ot_file_header_checksum(filemeta, target_link ? target_link : "", &sha256_ctx);
-	if (err < 0) {
-		ret = err;
-		goto fail;
+	if (S_ISREG(mode)) {
+		switch (fsi->file_verify) {
+		default:
+		case ot_file_verify_full:
+			/* Continous verification.  Actually we only verify on first open,
+			   but then rely on fs-verity to make the inode immutable */
+			if (!is_fsverity) {
+				printk(KERN_ERR "Full file verification requested, but file object %s doesn't have fs-verify enabled\n", object_id);
+				ret = -EIO;
+				goto fail;
+			}
+			do_verify = true;
+			break;
+		case ot_file_verify_once:
+			/* Verify only on first open */
+			do_verify = true;
+			break;
+		case ot_file_verify_none:
+			do_verify = false;
+			break;
+		}
 	}
 
-	sha256_final(&sha256_ctx, digest);
+	if (do_verify) {
+		struct sha256_state sha256_ctx;
 
-	sha256_digest_to_string (digest, digest_string);
+		/* Compute file header for checksum validation */
+		sha256_init(&sha256_ctx);
 
-	if (S_ISLNK(mode)) {
+		err = ot_file_header_checksum(filemeta, target_link ? target_link : "", &sha256_ctx);
+		if (err < 0) {
+			ret = err;
+			goto fail;
+		}
+
+		if (S_ISREG(mode)) {
+			err = file_content_checksum(&object_file->f_path, &sha256_ctx);
+			if (err < 0) {
+				ret = err;
+				goto fail;
+			}
+		}
+
+		sha256_final(&sha256_ctx, digest);
+
+		sha256_digest_to_string (digest, digest_string);
+
 		if (strcmp(digest_string, object_id) != 0) {
 			printk(KERN_ERR "Corrupted file object: checksum expected='%s', actual='%s'\n", object_id, digest_string);
 			ret = EIO;
