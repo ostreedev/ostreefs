@@ -94,7 +94,7 @@ you pass `repomode=bare-user` it also works with `bare-user` repositories.
 ## Building ostreefs
 
 Before using ostreefs you must build the ostreefs kernel module against the kernel sources
-matching the version you are running. On Fedore and CentOS this is available in the
+matching the version you are running. On Fedora and CentOS this is available in the
 kernel-devel package as /usr/src/kernels/$kernelversion, other distributions may
 have a different location.
 
