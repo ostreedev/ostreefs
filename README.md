@@ -87,6 +87,10 @@ drwxr-xr-x. 1 root root 4096 Jan  1  1970 usr
 drwxr-xr-x. 1 root root 4096 Jan  1  1970 var
 ```
 
+By default ostreefs assumes ostree repos are in `bare` mode, but if
+you pass `repomode=bare-user` it also works with `bare-user` repositories.
+
+
 ## Building ostreefs
 
 Before using ostreefs you must build the ostreefs kernel module against the kernel sources
@@ -124,9 +128,27 @@ And, to later revert it, run:
 
 ## Verification status
 
-Ostreefs currently verifies the sha256 checksum of the commit, dirmeta
-and dirtree objects, which means all directory content is guaranteed to
-match the commit.
+Ostreefs currently verifies the sha256 checksum of the commit,
+dirmeta, dirtree and symbolic link object before using them, and keep
+the data in kernel memory after verification. This means that a
+any such metadata is guaranteed to correctly match what was in the
+original commit at all times.
 
-However, content and metadata for regular files and symlinks is not
-currenly verified. Work is ongoing to support this though.
+However, content and metadata for regular files is a bit more complex.
+Verifying file contents requires a full sha256 checksum of the file
+contents, which is costly. And even if we do the checksum calculation
+once, there is no guarantees that the backing file isn't changed by
+some other process while ostreefs is using it.
+
+There are three modes for file verification today, controlled by
+the `fileverify` mount option
+
+ * `none`: (default) No verification of file content
+ * `once`: The sha256 of the file metadata (uid, gid, mode, xattrs) and content
+    is computed at inode lookup time and checked against the object id.
+ * `full`: Same behaviour as `once`, however we verify that the backing file object
+    has fs-verity enabled. This guarantees it is immutable, so the initial check is
+    valid over time.
+
+In the future we would like to have a mode that can rely on the actual fs-verify
+checksum, so that we can avoid having to run a sha256 over the file contents.
