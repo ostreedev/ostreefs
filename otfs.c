@@ -46,7 +46,7 @@ struct otfs_info {
 };
 
 struct otfs_inode {
-	struct inode vfs_inode;
+	struct inode vfs_inode; /* must be first for clear in otfs_alloc_inode to work */
 	char object_id[OSTREE_SHA256_STRING_LEN+1];
 	OtTreeMetaRef dirtree;
 	OtDirMetaRef dirmeta;
@@ -111,11 +111,7 @@ static struct inode *otfs_alloc_inode(struct super_block *sb)
 	if (!oti)
 		return NULL;
 
-        oti->vfs_inode.i_link = NULL;
-	oti->dirtree.base =  NULL;
-	oti->dirtree.size =  0;
-	oti->dirmeta.base = NULL;
-	oti->dirmeta.size = 0;
+	memset((u8*)oti + sizeof(struct inode), 0, sizeof(struct otfs_inode) - sizeof(struct inode));
 
 	return &oti->vfs_inode;
 }
