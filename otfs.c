@@ -26,6 +26,8 @@
 
 #include "ostree.h"
 
+#define OTFS_OPEN_FLAGS (O_NOATIME | FMODE_NONOTIFY)
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Alexander Larsson <alexl@redhat.com>");
 
@@ -250,7 +252,7 @@ static int otfs_read_object (struct path *object_dir, const char *object_id, con
 	uint8_t digest[SHA256_DIGEST_SIZE];
 	char digest_string[OSTREE_SHA256_STRING_LEN + 1];
 
-	f = otfs_open_object(object_dir, object_id, type, O_RDONLY);
+	f = otfs_open_object(object_dir, object_id, type, O_RDONLY | OTFS_OPEN_FLAGS);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 
@@ -598,7 +600,7 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 
 	ot_checksum_to_string (file_csum, object_id);
 
-	object_file = otfs_open_object (&fsi->object_dir, object_id, ".file", O_PATH|O_NOFOLLOW);
+	object_file = otfs_open_object (&fsi->object_dir, object_id, ".file", O_PATH|O_NOFOLLOW|OTFS_OPEN_FLAGS);
 	if (IS_ERR(object_file))
 		return ERR_CAST(object_file);
 
@@ -633,7 +635,7 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 			int read_bytes;
 			struct file *f;
 
-			f = file_open_root(&(object_file->f_path), "", O_RDONLY, 0);
+			f = file_open_root(&(object_file->f_path), "", O_RDONLY|OTFS_OPEN_FLAGS, 0);
 			if (IS_ERR(f)) {
 				ret = PTR_ERR(f);
 				goto fail;
