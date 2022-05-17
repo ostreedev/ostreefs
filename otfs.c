@@ -47,10 +47,16 @@ struct otfs_info {
 
 struct otfs_inode {
 	struct inode vfs_inode; /* must be first for clear in otfs_alloc_inode to work */
-	struct path path;
-	OtTreeMetaRef dirtree;
 	OtDirMetaRef dirmeta;
-	u64 inode_base;
+	union {
+		struct {
+			struct path path;
+		} nondir;
+		struct {
+			OtTreeMetaRef dirtree;
+			u64 inode_base;
+		} dir;
+	};
 };
 
 static inline struct otfs_inode *OTFS_I(struct inode *inode)
@@ -120,13 +126,16 @@ static void otfs_destroy_inode(struct inode *inode)
 {
 	struct otfs_inode *oti = OTFS_I(inode);
 
-	if (oti->path.dentry)
-		path_put(&oti->path);
+	if (S_ISDIR(inode->i_mode)) {
+		ot_ref_kvfree(oti->dir.dirtree);
+	} else {
+		if (oti->nondir.path.dentry)
+			path_put(&oti->nondir.path);
+	}
 
 	if (S_ISLNK(inode->i_mode) && inode->i_link)
 		kfree(inode->i_link);
 
-	ot_ref_kvfree(oti->dirtree);
 	ot_ref_kvfree(oti->dirmeta);
 }
 
@@ -651,8 +660,8 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 
 	oti = OTFS_I(inode);
 
-	oti->path = object_file->f_path;
-	path_get(&oti->path);
+	oti->nondir.path = object_file->f_path;
+	path_get(&oti->nondir.path);
 	oti->dirmeta = filemeta;
 
 	inode->i_uid = make_kuid(current_user_ns(), ot_dir_meta_get_uid(filemeta));
@@ -730,6 +739,13 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 		goto fail;
 	}
 
+	inode->i_uid = make_kuid(current_user_ns(), uid);
+	inode->i_gid = make_kgid(current_user_ns(), gid);
+
+	inode->i_op = &otfs_dir_inode_operations;
+	inode->i_fop = &otfs_dir_operations;
+	inode->i_size = 4096;
+
 	oti = OTFS_I(inode);
 
 	/* Allocate inodes for all children */
@@ -738,15 +754,9 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 		n_inos += ot_arrayof_tree_file_get_length (files);
 	if (ot_tree_meta_get_dirs (dirtree, &dirs))
 		n_inos += ot_arrayof_tree_dir_get_length (dirs);
-	oti->inode_base = atomic64_add_return (n_inos, &fsi->inode_counter) - n_inos;
-	inode->i_uid = make_kuid(current_user_ns(), uid);
-	inode->i_gid = make_kgid(current_user_ns(), gid);
+	oti->dir.inode_base = atomic64_add_return (n_inos, &fsi->inode_counter) - n_inos;
 
-	inode->i_op = &otfs_dir_inode_operations;
-	inode->i_fop = &otfs_dir_operations;
-	inode->i_size = 4096;
-
-	oti->dirtree = dirtree; /* Transfer ownership */
+	oti->dir.dirtree = dirtree; /* Transfer ownership */
 	oti->dirmeta = dirmeta; /* Transfer ownership */
 
 	return inode;
@@ -830,11 +840,11 @@ struct dentry *otfs_lookup(struct inode *dir, struct dentry *dentry,
 	fsi = dir->i_sb->s_fs_info;
 	dir_oti = OTFS_I(dir);
 
-	if (!ot_tree_meta_get_files (dir_oti->dirtree, &files))
+	if (!ot_tree_meta_get_files (dir_oti->dir.dirtree, &files))
 		return ERR_PTR(-EIO);
 	n_files = ot_arrayof_tree_file_get_length (files);
 
-	if (!ot_tree_meta_get_dirs (dir_oti->dirtree, &dirs))
+	if (!ot_tree_meta_get_dirs (dir_oti->dir.dirtree, &dirs))
 		return ERR_PTR(-EIO);
 	n_dirs = ot_arrayof_tree_dir_get_length (dirs);
 
@@ -856,7 +866,7 @@ struct dentry *otfs_lookup(struct inode *dir, struct dentry *dentry,
 			if (!ot_tree_file_get_checksum (treefile, &file_csum))
 				return ERR_PTR(-EIO);
 
-			inode = otfs_make_file_inode(dir->i_sb, dir, dir_oti->inode_base + i,
+			inode = otfs_make_file_inode(dir->i_sb, dir, dir_oti->dir.inode_base + i,
 						     file_csum);
 			if (IS_ERR(inode))
 				return ERR_CAST(inode);
@@ -884,7 +894,7 @@ struct dentry *otfs_lookup(struct inode *dir, struct dentry *dentry,
 			    !ot_tree_dir_get_meta_checksum (treedir, &meta_csum))
 				return ERR_PTR(-EIO);
 
-			inode = otfs_make_dir_inode(dir->i_sb, dir, dir_oti->inode_base + n_files + i,
+			inode = otfs_make_dir_inode(dir->i_sb, dir, dir_oti->dir.inode_base + n_files + i,
 						    tree_csum, meta_csum);
 			if (IS_ERR(inode))
 				return ERR_CAST(inode);
@@ -910,11 +920,11 @@ static int otfs_iterate(struct file *file, struct dir_context *ctx)
 	fsi = file->f_inode->i_sb->s_fs_info;
 	oti = OTFS_I(file->f_inode);
 
-	if (!ot_tree_meta_get_files (oti->dirtree, &files))
+	if (!ot_tree_meta_get_files (oti->dir.dirtree, &files))
 		return -EIO;
 	n_files = ot_arrayof_tree_file_get_length (files);
 
-	if (!ot_tree_meta_get_dirs (oti->dirtree, &dirs))
+	if (!ot_tree_meta_get_dirs (oti->dir.dirtree, &dirs))
 		return -EIO;
 	n_dirs = ot_arrayof_tree_dir_get_length (dirs);
 
@@ -942,7 +952,7 @@ static int otfs_iterate(struct file *file, struct dir_context *ctx)
 			continue;
 
 		if (pos++ == ctx->pos) {
-			if (dir_emit(ctx, name, name_len, oti->inode_base + i, DT_UNKNOWN)) {
+			if (dir_emit(ctx, name, name_len, oti->dir.inode_base + i, DT_UNKNOWN)) {
 				ctx->pos++;
 			} else {
 				done = true; /* no more */
@@ -964,7 +974,7 @@ static int otfs_iterate(struct file *file, struct dir_context *ctx)
 			continue;
 
 		if (pos++ == ctx->pos) {
-			if (dir_emit(ctx, name, name_len, oti->inode_base + n_files + i, DT_DIR)) {
+			if (dir_emit(ctx, name, name_len, oti->dir.inode_base + n_files + i, DT_DIR)) {
 				ctx->pos++;
 			} else {
 				done = true; /* no more */
@@ -1112,7 +1122,7 @@ static int otfs_open_file(struct inode *inode, struct file *file)
 	if (file->f_flags & (O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC))
 		return -EROFS;
 
-	real_file = file_open_root(&oti->path, "", file->f_flags, 0);
+	real_file = file_open_root(&oti->nondir.path, "", file->f_flags, 0);
 	if (IS_ERR(real_file)) {
 		return PTR_ERR(real_file);
 	}
