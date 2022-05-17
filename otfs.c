@@ -47,7 +47,7 @@ struct otfs_info {
 
 struct otfs_inode {
 	struct inode vfs_inode; /* must be first for clear in otfs_alloc_inode to work */
-	char object_id[OSTREE_SHA256_STRING_LEN+1];
+	struct path path;
 	OtTreeMetaRef dirtree;
 	OtDirMetaRef dirmeta;
 	u64 inode_base;
@@ -119,6 +119,9 @@ static struct inode *otfs_alloc_inode(struct super_block *sb)
 static void otfs_destroy_inode(struct inode *inode)
 {
 	struct otfs_inode *oti = OTFS_I(inode);
+
+	if (oti->path.dentry)
+		path_put(&oti->path);
 
 	if (S_ISLNK(inode->i_mode) && inode->i_link)
 		kfree(inode->i_link);
@@ -648,7 +651,8 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 
 	oti = OTFS_I(inode);
 
-	memcpy (oti->object_id, object_id, sizeof(object_id));
+	oti->path = object_file->f_path;
+	path_get(&oti->path);
 	oti->dirmeta = filemeta;
 
 	inode->i_uid = make_kuid(current_user_ns(), ot_dir_meta_get_uid(filemeta));
@@ -1099,7 +1103,6 @@ static int otfs_release_file(struct inode *inode, struct file *file)
 
 static int otfs_open_file(struct inode *inode, struct file *file)
 {
-	struct otfs_info *fsi = inode->i_sb->s_fs_info;
 	struct otfs_inode *oti = OTFS_I(inode);
 	struct file *real_file;
 
@@ -1109,7 +1112,7 @@ static int otfs_open_file(struct inode *inode, struct file *file)
 	if (file->f_flags & (O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC))
 		return -EROFS;
 
-	real_file = otfs_open_object (&fsi->object_dir, oti->object_id, ".file", file->f_flags);
+	real_file = file_open_root(&oti->path, "", file->f_flags, 0);
 	if (IS_ERR(real_file)) {
 		return PTR_ERR(real_file);
 	}
