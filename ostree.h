@@ -368,6 +368,50 @@ static inline int ot_dir_meta_serialize(u32 uid, u32 gid, u32 mode, struct OtXAt
 	return 0;
 }
 
+/************** OtFileHeader *******************/
+#define OT_FILE_HEADER_TYPESTRING "(uuuusa(ayay))"
+
+static inline int ot_file_header_checksum(OtDirMetaRef dir_meta, const char *target_link, struct sha256_state *sha256_ctx)
+{
+	size_t body_size, variant_size, target_link_len, size;
+	u32 offset_size;
+	OtArrayofXattrRef xattrs;
+	u8 data[8 + 16];
+
+	if (!ot_dir_meta_get_xattrs(dir_meta, &xattrs)) {
+		return -EIO;
+	}
+
+	target_link_len = strlen(target_link) + 1;
+	body_size =
+		16  /* uid, gid, mode, pad */ +
+		target_link_len +
+		xattrs.size;
+	variant_size = ot_variant_total_size(body_size, 1);
+	offset_size = ot_ref_get_offset_size(variant_size);
+	size = 8 /* lenprefix header */ + variant_size;
+
+	/* length-prefix */
+	STRUCT_MEMBER(u32, data, 0) = cpu_to_be32(variant_size);
+	STRUCT_MEMBER(u32, data, 4) = 0; /* padding */
+
+	/* variant */
+	STRUCT_MEMBER(u32, data + 8, 0) = cpu_to_be32(ot_dir_meta_get_uid (dir_meta));
+	STRUCT_MEMBER(u32, data + 8, 4) = cpu_to_be32(ot_dir_meta_get_gid (dir_meta));
+	STRUCT_MEMBER(u32, data + 8, 8) = cpu_to_be32(ot_dir_meta_get_mode (dir_meta));
+	STRUCT_MEMBER(u32, data + 8, 12) = 0;
+
+	sha256_update(sha256_ctx, data, 8 + 16);
+
+	sha256_update(sha256_ctx, target_link, target_link_len);
+	sha256_update(sha256_ctx, xattrs.base, xattrs.size);
+
+	ot_ref_write_unaligned_le(data, offset_size, 16 + target_link_len);
+	sha256_update(sha256_ctx, data, offset_size);
+
+	return 0;
+
+}
 
 /************** OtTreeFile *******************/
 #define OT_TREE_FILE_TYPESTRING "(say)"

@@ -588,10 +588,13 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 	struct inode *inode;
 	char *target_link = NULL;
 	DEFINE_DELAYED_CALL(done);
+	uint8_t digest[SHA256_DIGEST_SIZE];
+	char digest_string[OSTREE_SHA256_STRING_LEN + 1];
 	char object_id[OSTREE_SHA256_STRING_LEN+1];
 	OtDirMetaRef filemeta = { NULL, 0};
 	loff_t file_size;
 	u32 mode;
+	struct sha256_state sha256_ctx;
 
 	ot_checksum_to_string (file_csum, object_id);
 
@@ -649,6 +652,27 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 			}
 			target_link = kstrdup(buf, GFP_KERNEL);
 			vfree(buf);
+		}
+	}
+
+	/* Compute file header for checksum validation */
+	sha256_init(&sha256_ctx);
+
+	err =  ot_file_header_checksum(filemeta, target_link ? target_link : "", &sha256_ctx);
+	if (err < 0) {
+		ret = err;
+		goto fail;
+	}
+
+	sha256_final(&sha256_ctx, digest);
+
+	sha256_digest_to_string (digest, digest_string);
+
+	if (S_ISLNK(mode)) {
+		if (strcmp(digest_string, object_id) != 0) {
+			printk(KERN_ERR "Corrupted file object: checksum expected='%s', actual='%s'\n", object_id, digest_string);
+			ret = EIO;
+			goto fail;
 		}
 	}
 
