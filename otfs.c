@@ -38,8 +38,8 @@ enum ot_repo_mode {
 
 struct otfs_info {
 	char *object_dir_path;
+	struct path object_dir;
 	char *commit_id;
-	struct file *object_dir;
 	enum ot_repo_mode repo_mode;
 
 	atomic64_t inode_counter;
@@ -89,7 +89,7 @@ static int otfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	struct otfs_info *fsi = dentry->d_sb->s_fs_info;
 	int err;
 
-	err = vfs_statfs(&(fsi->object_dir->f_path), buf);
+	err = vfs_statfs(&(fsi->object_dir), buf);
 	if (!err) {
 		buf->f_namelen = NAME_MAX;
 		buf->f_type = OTFS_MAGIC;
@@ -144,8 +144,8 @@ static void otfs_put_super(struct super_block *sb)
 
 	if (fsi->object_dir_path)
 		kfree(fsi->object_dir_path);
-	if (fsi->object_dir)
-		fput(fsi->object_dir);
+	if (fsi->object_dir.dentry)
+		path_put(&fsi->object_dir);
 	if (fsi->commit_id)
 		kfree(fsi->commit_id);
 
@@ -214,7 +214,7 @@ static int otfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	return 0;
 }
 
-static struct file *otfs_open_object (struct file *object_dir, const char *object_id, const char *type, int flags)
+static struct file *otfs_open_object (struct path *object_dir, const char *object_id, const char *type, int flags)
 {
 	char relpath[OSTREE_SHA256_STRING_LEN + 12]; /* Fits slash and longest extenssion (.dirtree) */
 
@@ -228,10 +228,10 @@ static struct file *otfs_open_object (struct file *object_dir, const char *objec
 	strcat (relpath, object_id + 2);
 	strcat (relpath, type);
 
-	return file_open_root(&(object_dir->f_path), relpath, flags, 0);
+	return file_open_root(object_dir, relpath, flags, 0);
 }
 
-static int otfs_read_object (struct file *object_dir, const char *object_id, const char *type,
+static int otfs_read_object (struct path *object_dir, const char *object_id, const char *type,
 			     u8 **data_out)
 {
 	struct file *f = NULL;
@@ -275,7 +275,7 @@ static int otfs_read_object (struct file *object_dir, const char *object_id, con
 	return ret;
 }
 
-static int otfs_read_objectv (struct file *object_dir, OtChecksumRef checksum, const char *type,
+static int otfs_read_objectv (struct path *object_dir, OtChecksumRef checksum, const char *type,
 			      u8 **data_out)
 {
 	char object_id[OSTREE_SHA256_STRING_LEN+1];
@@ -284,7 +284,7 @@ static int otfs_read_objectv (struct file *object_dir, OtChecksumRef checksum, c
 	return otfs_read_object (object_dir, object_id, type, data_out);
 }
 
-static int otfs_read_dirtree_object (struct file *object_dir, OtChecksumRef commit,
+static int otfs_read_dirtree_object (struct path *object_dir, OtChecksumRef commit,
 				     OtTreeMetaRef *treemetav_out)
 {
 	OtTreeMetaRef treemetav;
@@ -304,7 +304,7 @@ static int otfs_read_dirtree_object (struct file *object_dir, OtChecksumRef comm
 	return 0;
 }
 
-static int otfs_read_dirmeta_object (struct file *object_dir, OtChecksumRef commit,
+static int otfs_read_dirmeta_object (struct path *object_dir, OtChecksumRef commit,
 				     OtDirMetaRef *dirmetav_out)
 {
 	OtDirMetaRef dirmetav;
@@ -587,7 +587,7 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 
 	ot_checksum_to_string (file_csum, object_id);
 
-	object_file = otfs_open_object (fsi->object_dir, object_id, ".file", O_PATH|O_NOFOLLOW);
+	object_file = otfs_open_object (&fsi->object_dir, object_id, ".file", O_PATH|O_NOFOLLOW);
 	if (IS_ERR(object_file))
 		return ERR_CAST(object_file);
 
@@ -684,7 +684,6 @@ static struct inode *otfs_make_file_inode(struct super_block *sb,
 static struct inode *otfs_make_dir_inode(struct super_block *sb,
 					 const struct inode *dir,
 					 ino_t ino_num,
-					 struct file *object_dir,
 					 OtChecksumRef dirtree_csum,
 					 OtChecksumRef dirmeta_csum)
 {
@@ -700,7 +699,7 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 	OtArrayofTreeFileRef files;
 	OtArrayofTreeDirRef dirs;
 
-	res = otfs_read_dirmeta_object (object_dir, dirmeta_csum, &dirmeta);
+	res = otfs_read_dirmeta_object (&fsi->object_dir, dirmeta_csum, &dirmeta);
 	if (res < 0) {
 		ret = res;
 		goto fail;
@@ -718,7 +717,7 @@ static struct inode *otfs_make_dir_inode(struct super_block *sb,
 
 	/* TODO: Should we validate mode mode? */
 
-	res = otfs_read_dirtree_object (object_dir, dirtree_csum,
+	res = otfs_read_dirtree_object (&fsi->object_dir, dirtree_csum,
 					&dirtree);
 	if (res < 0) {
 		ret = res;
@@ -885,7 +884,7 @@ struct dentry *otfs_lookup(struct inode *dir, struct dentry *dentry,
 			    !ot_tree_dir_get_meta_checksum (treedir, &meta_csum))
 				return ERR_PTR(-EIO);
 
-			inode = otfs_make_dir_inode(dir->i_sb, dir, dir_oti->inode_base + n_files + i, fsi->object_dir,
+			inode = otfs_make_dir_inode(dir->i_sb, dir, dir_oti->inode_base + n_files + i,
 						    tree_csum, meta_csum);
 			if (IS_ERR(inode))
 				return ERR_CAST(inode);
@@ -1114,7 +1113,7 @@ static int otfs_open_file(struct inode *inode, struct file *file)
 	if (file->f_flags & (O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC))
 		return -EROFS;
 
-	real_file = otfs_open_object (fsi->object_dir, oti->object_id, ".file", file->f_flags);
+	real_file = otfs_open_object (&fsi->object_dir, oti->object_id, ".file", file->f_flags);
 	if (IS_ERR(real_file)) {
 		return PTR_ERR(real_file);
 	}
@@ -1156,7 +1155,6 @@ static const struct file_operations otfs_file_operations = {
 static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct otfs_info *fsi = sb->s_fs_info;
-	struct file *object_dir = NULL;
 	struct file *f;
 	int ret;
 	int res;
@@ -1185,9 +1183,11 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		ret = PTR_ERR(f);
 		goto fail;
 	}
-	object_dir = f;
+	fsi->object_dir = f->f_path;
+	path_get(&fsi->object_dir);
+	fput(f);
 
-	res = otfs_read_object (object_dir, fsi->commit_id, ".commit", &commit_data);
+	res = otfs_read_object (&fsi->object_dir, fsi->commit_id, ".commit", &commit_data);
 	if (res < 0) {
 		ret = res;
 		goto fail;
@@ -1202,7 +1202,7 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	/* 0 is root, so start at 1 */
 	atomic64_set (&fsi->inode_counter, 1);
-	inode = otfs_make_dir_inode(sb, NULL, 0, object_dir,
+	inode = otfs_make_dir_inode(sb, NULL, 0,
 				    root_contents, root_metadata);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
@@ -1221,13 +1221,10 @@ static int otfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_time_gran = 1;
 
 	vfree(commit_data);
-	fsi->object_dir = object_dir;
 	return 0;
 fail:
 	if (commit_data)
 		vfree(commit_data);
-	if (object_dir)
-		fput(object_dir);
 	return ret;
 }
 
