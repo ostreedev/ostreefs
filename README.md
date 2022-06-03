@@ -1,3 +1,7 @@
+# NOTICE:
+# Work on ostreefs is now stopped, in favour of https://github.com/giuseppe/composefs/.
+
+
 Ostreefs
 ========
 
